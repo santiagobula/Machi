@@ -1,0 +1,465 @@
+---
+title: "Proyecto_Trading"
+author: "Bula-Malagón-Serrano"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Introducción 
+
+
+
+
+## Parametrización de la estrategia
+
+
+```{r}
+# Medias moviles doble crossover method "Exponenciales" 
+ticket <- "MSFT"
+from <- "2020-01-01"
+periodicidad <- "daily"   #"weekly", "monthly"
+EMA1 <- 20
+EMA2 <- 50
+
+# MACD & Signal Line
+
+rapida <- 12 
+lenta <- 26 
+signo <- 9
+
+#Oscilador RSI 
+MM_RSI <- 14
+
+# Graficos 
+
+ventana=120 #relacionado con la periodicidad 
+
+```
+
+
+
+# Cotización del Microsoft
+
+```{r,warning=FALSE}
+library(quantmod)
+library(ggplot2)
+#install.packages("TTR")
+library(TTR)
+library(dygraphs)
+library(dplyr)
+library(tidyverse)
+update.packages()
+```
+
+```{r}
+activo <- getSymbols(Symbols = ticket,src = "yahoo", from =from, to=Sys.Date(),
+                     periodicity = periodicidad, auto.assign = FALSE)
+PRECIO <- activo[,4]
+```
+
+
+## Medias moviles exponenciales doble crossover method
+
+```{r}
+EMA <- function (price,n){
+  ema <- c()
+  ema[1:(n-1)] <- NA
+  ema[n]<- mean(price[1:n])
+  beta <- 2/(n+1)
+  for (i in (n+1):length(price)){
+    ema[i]<-beta * price[i] + 
+      (1-beta) * ema[i-1]
+  }
+  ema <- reclass(ema,price)
+  return(ema)
+}
+
+MA1 <- EMA(PRECIO,EMA1)
+MA2 <- EMA(PRECIO,EMA2)
+
+
+x <- cbind(activo[,c(1:4)],MA1,MA2)
+cola <- tail(x, n=ventana)
+grap<-dygraph(cola)
+  dyCandlestick(grap)%>%
+  dyRangeSelector()
+
+```
+```{r}
+xy <- cbind(MA2,MA1)
+dygraph(xy)%>%
+  dyRangeSelector()
+
+```
+
+
+## MACD oscilador 
+
+```{r}
+MACD <- function (precio,Short,Large,sig){
+  MACD <- na.omit(EMA(precio,Short) - EMA(precio,Large))
+  signal <- EMA(MACD,sig)
+  tabla <- cbind(MACD,signal)
+  colnames(tabla) <- c("MACD","signal")
+  return(tabla)
+}
+
+
+MACD_data <- MACD(precio = PRECIO,Short =rapida ,Large = lenta,sig = signo)
+
+dygraph(MACD_data)%>%
+  dyRangeSelector()
+
+
+```
+
+## Señales con la MEDIA MOVIL Y MACD
+
+### Señal de compra
+
+```{r}
+siganls_buy <- function(ma1,ma2){
+  
+  signal_buy <- c()
+  inicio <- (nrow(ma2)-nrow(filter(as.data.frame(ma2),V1!="NA")))
+  ma2[inicio,1] <- 0
+  for (i in (inicio+1):nrow(MA2)) {
+    if ((ma1[i,1]>ma2[i,1])&&(ma1[i-1,1]<ma2[i-1,1])) {
+      signal_buy[i] <- 1
+    }else{
+      signal_buy[i] <- 0
+    }
+  }
+x <- cbind(ma1,ma2,signal_buy)
+return(x)
+}
+
+
+compra <- siganls_buy(ma1 = MA1,ma2 = MA2)
+```
+   
+### Señal de venta 
+
+```{r}
+siganls_sell<- function(ma1,ma2){
+
+  signal_sell <- c()
+  inicio <- (nrow(ma2)-nrow(filter(as.data.frame(ma2),V1!="NA")))
+  ma2[inicio,1] <- 0
+  for (i in (inicio+1):nrow(MA2)) {
+    if ((ma1[i,1]<ma2[i,1])&&(ma1[i-1,1]>ma2[i-1,1])) {
+      signal_sell[i] <- 1
+    }else{
+      signal_sell[i] <- 0
+    }
+  }
+x <- cbind(ma1,ma2,signal_sell)
+return(x)
+}
+
+venta <- siganls_sell(ma1 = MA1,ma2 = MA2)
+```
+
+## Confiormacion con MACD
+### señal compra
+
+```{r}
+siganls_buy_MACD <- function(macd){
+  
+  signal_buy <- c()
+  inicio <- (nrow(macd)-nrow(filter(as.data.frame(macd[,2]),signal!="NA")))
+  macd[inicio,2] <- 0
+  for (i in (inicio+1):nrow(macd)) {
+    if ((macd[i,1]>macd[i,2])&&(macd[i-1,1]<macd[i-1,2])) {
+      signal_buy[i] <- 1
+    }else{
+      signal_buy[i] <- 0
+    }
+  }
+x <- cbind(macd,signal_buy)
+
+return(x)
+}
+
+compra_MACD <- siganls_buy_MACD(macd = abs(MACD_data))
+
+
+```
+### señal compra
+
+```{r}
+siganls_sell_MACD <- function(macd){
+  
+  signal_sell <- c()
+  inicio <- (nrow(macd)-nrow(filter(as.data.frame(macd[,2]),signal!="NA")))
+  macd[inicio,2] <- 0
+  for (i in (inicio+1):nrow(macd)) {
+    if ((macd[i,1]<macd[i,2])&&(macd[i-1,1]>macd[i-1,2])) {
+      signal_sell[i] <- 1
+    }else{
+      signal_sell[i] <- 0
+    }
+  }
+x <- cbind(macd,signal_sell)
+return(x)
+}
+
+venta_MACD <- siganls_sell_MACD(macd = abs(MACD_data))
+
+
+```
+
+
+# UNIFICACIÓN DE TABLAS 
+
+```{r}
+# venta ---- 
+siganls_sell<- function(ma1,ma2){
+
+  signal_sell <- c()
+  inicio <- (nrow(ma2)-nrow(filter(as.data.frame(ma2),V1!="NA")))
+  ma2[inicio,1] <- 0
+  for (i in (inicio+1):nrow(MA2)) {
+    if ((ma1[i,1]<ma2[i,1])&&(ma1[i-1,1]>ma2[i-1,1])) {
+      signal_sell[i] <- 1
+    }else{
+      signal_sell[i] <- 0
+    }
+  }
+x <- cbind(ma1,ma2,signal_sell)
+return(x)
+}
+
+venta <- siganls_sell(ma1 = MA1,ma2 = MA2)
+# compra ----
+siganls_buy <- function(ma1,ma2){
+  
+  signal_buy <- c()
+  inicio <- (nrow(ma2)-nrow(filter(as.data.frame(ma2),V1!="NA")))
+  ma2[inicio,1] <- 0
+  for (i in (inicio+1):nrow(MA2)) {
+    if ((ma1[i,1]>ma2[i,1])&&(ma1[i-1,1]<ma2[i-1,1])) {
+      signal_buy[i] <- 1
+    }else{
+      signal_buy[i] <- 0
+    }
+  }
+x <- cbind(ma1,ma2,signal_buy)
+return(x)
+}
+
+
+compra <- siganls_buy(ma1 = MA1,ma2 = MA2)
+# venta MACD ----
+siganls_sell_MACD <- function(macd){
+  
+  signal_sell <- c()
+  inicio <- (nrow(macd)-nrow(filter(as.data.frame(macd[,2]),signal!="NA")))
+  macd[inicio,2] <- 0
+  for (i in (inicio+1):nrow(macd)) {
+    if ((macd[i,1]<macd[i,2])&&(macd[i-1,1]>macd[i-1,2])) {
+      signal_sell[i] <- 1
+    }else{
+      signal_sell[i] <- 0
+    }
+  }
+x <- cbind(macd,signal_sell)
+return(x)
+}
+
+venta_MACD <- siganls_sell_MACD(macd = abs(MACD_data))
+# compra MACD ----
+siganls_buy_MACD <- function(macd){
+  
+  signal_buy <- c()
+  inicio <- (nrow(macd)-nrow(filter(as.data.frame(macd[,2]),signal!="NA")))
+  macd[inicio,2] <- 0
+  for (i in (inicio+1):nrow(macd)) {
+    if ((macd[i,1]>macd[i,2])&&(macd[i-1,1]<macd[i-1,2])) {
+      signal_buy[i] <- 1
+    }else{
+      signal_buy[i] <- 0
+    }
+  }
+x <- cbind(macd,signal_buy)
+
+return(x)
+}
+
+compra_MACD <- siganls_buy_MACD(macd = abs(MACD_data))
+
+
+# tabla ----
+TABLA <- merge(activo,venta,join = "inner")
+TABLA <- merge(TABLA,compra,join = "inner")
+TABLA <- merge(TABLA,venta_MACD,join = "inner")
+TABLA <- merge(TABLA,compra_MACD,join = "inner")
+
+final <- select(as.data.frame(TABLA),c(1,4,9,12,15,18))
+colnames(final) <- c("Precio_apertura","Precio_cierre","sig_SELL_MA","sig_BUY_MA",
+                     "MACD_Sell","MACD_Buy")
+final$sig_SELL_MA <- gsub(1,"SELL",final$sig_SELL_MA)
+final$sig_SELL_MA <- gsub(0,"nada",final$sig_SELL_MA)
+
+final$sig_BUY_MA <- gsub(1,"BUY",final$sig_BUY_MA)
+final$sig_BUY_MA <- gsub(0,"nada",final$sig_BUY_MA)
+
+final$MACD_Sell <- gsub(1,"SELL",final$MACD_Sell)
+final$MACD_Sell <- gsub(0,"nada",final$MACD_Sell)
+
+final$MACD_Buy <- gsub(1,"BUY",final$MACD_Buy)
+final$MACD_Buy <- gsub(0,"nada",final$MACD_Buy)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# RSI oscilador 
+
+```{r}
+Sobrecompra <- 70
+Sobreventa <- 30
+myRSI <- function (PRECIO,n){
+  N <- length(PRECIO)
+  U <- rep(0,N)
+  D <- rep(0,N)
+  rsi <- rep(NA,N)
+  Lprice <- Lag(PRECIO,1)
+  for (i in 2:N){
+    if (PRECIO[i]>=Lprice[i]){
+      U[i] <- 1
+    } else {
+      D[i] <- 1
+    }
+    if (i>n){
+      AvgUp <- mean(U[(i-n+1):i])
+      AvgDn <- mean(D[(i-n+1):i])
+      rsi[i] <- AvgUp/(AvgUp+AvgDn)*100 
+      }
+    }
+  rsi <- reclass(rsi, PRECIO)
+  return(rsi)
+}
+
+rsi <- myRSI(Cl(PRECIO), MM_RSI)
+RSI <- cbind(rsi,Sobrecompra,Sobreventa)
+#Gráfico
+dygraph(RSI, main= "RSI oscilator")%>%
+  dyRangeSelector()
+```
+#Señales con RSI 
+```{r}
+senal_rsi <- function(oscilador,S_venta,inicio){
+  senal_compra <- c()
+  INICIO <- inicio+1
+  TILL <- nrow(oscilador)
+  for (i in INICIO:TILL) {
+      if((oscilador[i,1]<S_venta)&&(oscilador[i-1,1]>S_venta)){
+      senal_compra[i] <- 1
+    }else{
+      senal_compra[i] <- 0
+    }
+  }
+  z <- cbind(oscilador,senal_compra)
+filter_r <- filter(as.data.frame(z),senal_compra==1)
+return(filter_r)
+  }
+
+RSI_signals <- senal_rsi(oscilador= rsi,S_venta = Sobreventa,inicio = MM_RSI)
+head(RSI_signals)
+```
+
+```{r}
+# Input elements
+    
+    ticket <- input$text1
+    from <- input$date1
+    periodicidad <- "daily"   #"weekly", "monthly"
+    EMA1 <- 20
+    EMA2 <- 50
+    
+    activo <- getSymbols(Symbols = ticket,src = "yahoo", from =from, to=Sys.Date(),
+                         periodicity = periodicidad, auto.assign = FALSE)
+    PRECIO <- activo[,4]
+    
+    MM_RSI <- 14
+    
+    Sobrecompra <- 70
+    Sobreventa <- 30
+    myRSI <- function (PRECIO,n){
+      N <- length(PRECIO)
+      U <- rep(0,N)
+      D <- rep(0,N)
+      rsi <- rep(NA,N)
+      Lprice <- Lag(PRECIO,1)
+      for (i in 2:N){
+        if (PRECIO[i]>=Lprice[i]){
+          U[i] <- 1
+        } else {
+          D[i] <- 1
+        }
+        if (i>n){
+          AvgUp <- mean(U[(i-n+1):i])
+          AvgDn <- mean(D[(i-n+1):i])
+          rsi[i] <- AvgUp/(AvgUp+AvgDn)*100 
+        }
+      }
+      rsi <- reclass(rsi, PRECIO)
+      return(rsi)
+    }
+    
+    rsi <- myRSI(Cl(PRECIO), MM_RSI)
+    RSI <- cbind(rsi,Sobrecompra,Sobreventa)
+    #Gráfico
+    dygraph(RSI)%>%
+      dyRangeSelector()
+```
+
+```{r}
+# Input elements
+    
+    ticket <- input$text1
+    from <- input$date1
+    periodicidad <- "daily"   #"weekly", "monthly"
+    EMA1 <- 20
+    EMA2 <- 50
+    
+    # MACD & Signal Line
+    
+    rapida <- 12 
+    lenta <- 26 
+    signo <- 9
+    
+    activo <- getSymbols(Symbols = ticket,src = "yahoo", from =from, to=Sys.Date(),
+                         periodicity = periodicidad, auto.assign = FALSE)
+    PRECIO <- activo[,4]
+    
+    
+    MACD <- function (precio,Short,Large,sig){
+      MACD <- na.omit(EMA(precio,Short) - EMA(precio,Large))
+      signal <- EMA(MACD,sig)
+      tabla <- cbind(MACD,signal)
+      colnames(tabla) <- c("MACD","signal")
+      return(tabla)
+    }
+    
+    
+    MACD_data <- MACD(precio = PRECIO,Short =rapida ,Large = lenta,sig = signo)
+    
+    dygraph(MACD_data)%>%
+      dyRangeSelector()
+```
+
